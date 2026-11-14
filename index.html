@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Dark Escape</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #071011; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 20%, #1c3434, #071011 65%); }
+    main { width: min(100%, 1280px); }
+    canvas { display: block; width: 100%; aspect-ratio: 16 / 9; background: #091011; touch-action: none; }
+    .bar { box-sizing: border-box; padding: 10px 18px; display: flex; justify-content: space-between; gap: 12px; color: #b7ccc7; font-size: .82rem; }
+    button { border: 1px solid #6db5a4; background: #15302c; color: #e4fff7; padding: 8px 14px; border-radius: 3px; font: inherit; cursor: pointer; }
+    button:active { background: #285149; }
+    #touch { display: none; position: fixed; inset: auto 0 max(8px, env(safe-area-inset-bottom)) 0; justify-content: space-between; padding: 0 20px; pointer-events: none; }
+    .pad, .use { pointer-events: auto; user-select: none; -webkit-user-select: none; }
+    .pad { display: grid; grid-template-columns: repeat(3, 52px); gap: 3px; }
+    .pad button { width: 52px; height: 48px; padding: 0; font-size: 1.15rem; }
+    .up { grid-column: 2; }.left { grid-column: 1; }.down { grid-column: 2; }.right { grid-column: 3; grid-row: 2; }
+    .use { align-self: center; border-radius: 50%; width: 76px; height: 76px; background: #604b25; border-color: #ffd26a; }
+    @media (pointer: coarse) { #touch { display: flex; } .bar { padding-bottom: 96px; } }
+  </style>
+</head>
+<body>
+<main>
+  <canvas id="game" width="1280" height="720" aria-label="Dark Escape game"></canvas>
+  <div class="bar"><span>Move: WASD or arrows. Hold E or Space at a signal fire.</span><button id="restart">Restart match</button></div>
+</main>
+<div id="touch" aria-hidden="true">
+  <div class="pad"><button class="up" data-key="up">^</button><button class="left" data-key="left">&lt;</button><button class="down" data-key="down">v</button><button class="right" data-key="right">&gt;</button></div>
+  <button class="use" data-key="use">USE</button>
+</div>
+<script>
+(() => {
+  "use strict";
+  const canvas = document.querySelector("#game"), ctx = canvas.getContext("2d");
+  const arena = { x: 52, y: 82, w: 1176, h: 586 }, gate = { x: 1165, y: 300, w: 38, h: 144 };
+  const walls = [{x:250,y:310,w:190,h:38},{x:560,y:210,w:44,h:185},{x:780,y:435,w:235,h:40},{x:925,y:105,w:42,h:160},{x:90,y:400,w:145,h:38}];
+  const down = new Set();
+  let state;
+
+  function reset() {
+    state = {
+      player: { x:128, y:610, health:100, down:false, color:"#8ee6c2" },
+      bots: [{x:205,y:570,health:100,down:false,color:"#b7b0ff"},{x:140,y:505,health:100,down:false,color:"#f5b4ce"},{x:290,y:620,health:100,down:false,color:"#f6d37a"}],
+      hunter: { x:1060, y:145, cooldown:0 },
+      fires: [{x:330,y:188,progress:0,lit:false},{x:705,y:530,progress:0,lit:false},{x:1055,y:210,progress:0,lit:false}],
+      message: "Find and ignite the three signal fires.", capture:0, over:""
+    };
+  }
+  function dist(a,b) { return Math.hypot(a.x-b.x, a.y-b.y); }
+  function nearestFire(agent) {
+    let found = null, best = Infinity;
+    for (const fire of state.fires) if (!fire.lit && dist(agent,fire) < best) { found = fire; best = dist(agent,fire); }
+    return found;
+  }
+  function allLit() { return state.fires.every(f => f.lit); }
+  function insideWall(x,y) { return walls.some(w => x >= w.x-12 && x <= w.x+w.w+12 && y >= w.y-12 && y <= w.y+w.h+12); }
+  function move(agent, dx, dy, speed, dt) {
+    const length = Math.hypot(dx,dy); if (!length) return;
+    const x = Math.max(arena.x+13, Math.min(arena.x+arena.w-13, agent.x + dx / length * speed * dt));
+    const y = Math.max(arena.y+13, Math.min(arena.y+arena.h-13, agent.y + dy / length * speed * dt));
+    if (!insideWall(x,y)) { agent.x = x; agent.y = y; }
+  }
+  function hurt(target) { target.health -= 34; if (target.health <= 0) { target.down = true; if (target === state.player) state.message = "You are down. Keep the fires alive."; } }
+  function update(dt) {
+    if (state.over) return;
+    const p = state.player;
+    if (!p.down) move(p, (down.has("right")?1:0)-(down.has("left")?1:0), (down.has("down")?1:0)-(down.has("up")?1:0), 220, dt);
+    for (const bot of state.bots) {
+      if (bot.down) continue;
+      if (dist(bot,state.hunter) < 165) move(bot, bot.x-state.hunter.x, bot.y-state.hunter.y, 132, dt);
+      else { const fire = nearestFire(bot); if (fire) move(bot, fire.x-bot.x, fire.y-bot.y, 132, dt); }
+    }
+    const alive = [p, ...state.bots].filter(a => !a.down);
+    if (alive.length) {
+      const target = alive.reduce((best,a) => dist(a,state.hunter) < dist(best,state.hunter) ? a : best);
+      move(state.hunter, target.x-state.hunter.x, target.y-state.hunter.y, 118, dt);
+      state.hunter.cooldown = Math.max(0, state.hunter.cooldown-dt);
+      if (dist(target,state.hunter) < 29 && state.hunter.cooldown === 0) { hurt(target); state.hunter.cooldown = 1.15; }
+    }
+    const active = nearestFire(p);
+    if (!p.down && active && dist(p,active) < 62 && down.has("use")) { active.progress = Math.min(100, active.progress + 26*dt); state.message = `Igniting signal: ${Math.floor(active.progress)}%`; }
+    for (const fire of state.fires) {
+      if (fire.lit) continue;
+      for (const bot of state.bots) if (!bot.down && dist(bot,fire) < 46) fire.progress = Math.min(100, fire.progress + 7*dt);
+      if (fire.progress >= 100) { fire.lit = true; state.message = "A signal fire is lit."; }
+    }
+    if (allLit()) state.message = "Extraction gate powered. Reach the bright eastern gate.";
+    if (p.down) { state.capture += dt; if (state.capture > 8) { state.over = "CAPTURED"; state.message = "The dark claimed you."; } }
+    else state.capture = 0;
+    if (allLit() && p.x > gate.x-18 && p.x < gate.x+gate.w+18 && p.y > gate.y-18 && p.y < gate.y+gate.h+18) { state.over = "ESCAPED"; state.message = "You escaped the night."; }
+  }
+  function rect(x,y,w,h,fill,stroke) { ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if (stroke) { ctx.strokeStyle=stroke; ctx.strokeRect(x,y,w,h); } }
+  function text(value,x,y,size,color,align="left") { ctx.fillStyle=color; ctx.font=`${size}px system-ui`; ctx.textAlign=align; ctx.fillText(value,x,y); }
+  function agent(a,label,color) { ctx.beginPath(); ctx.fillStyle="#071011"; ctx.arc(a.x,a.y,13,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.fillStyle=color; ctx.arc(a.x,a.y,10,0,Math.PI*2); ctx.fill(); text(label,a.x,a.y+5,12,"#071011","center"); }
+  function draw() {
+    rect(0,0,1280,720,"#091011"); rect(arena.x,arena.y,arena.w,arena.h,"#152123","#395052");
+    ctx.fillStyle="#29393a"; for(let x=80;x<1210;x+=74) for(let y=110;y<650;y+=67) ctx.fillRect(x,y,2,2);
+    for (const w of walls) rect(w.x,w.y,w.w,w.h,"#344345","#6a7770");
+    for (const fire of state.fires) { const c=fire.lit?"#ffbd55":"#405554"; ctx.beginPath();ctx.fillStyle=fire.lit?"#ffbd5522":"#40555422";ctx.arc(fire.x,fire.y,46,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.fillStyle=c;ctx.arc(fire.x,fire.y,15,0,Math.PI*2);ctx.fill();rect(fire.x-25,fire.y+26,50,6,"#091011");rect(fire.x-25,fire.y+26,fire.progress*.5,6,c); }
+    const open=allLit(); rect(gate.x,gate.y,gate.w,gate.h,open?"#7ef2d1":"#384c4c",open?"#b2fff0":"#526565");
+    agent(state.hunter,"H","#e85d61"); for(const bot of state.bots) agent(bot,bot.down?"x":"C",bot.down?"#5d6267":bot.color); agent(state.player,state.player.down?"x":"Y",state.player.down?"#5d6267":state.player.color);
+    rect(0,0,1280,63,"#0a1516"); const lit=state.fires.filter(f=>f.lit).length; text("DARK ESCAPE",28,28,22,"#d7fff2"); text(`SIGNALS ${lit}/3   HEALTH ${Math.max(0,state.player.health)}`,28,52,15,"#9fbeb8"); text(state.message,380,38,17,"#ffdf99"); text("WASD / ARROWS move    E or SPACE interact",850,52,14,"#9fbeb8");
+    if(state.over) { rect(280,260,720,150,"#071011ee"); text(state.over,640,320,34,state.over==="ESCAPED"?"#82f6ce":"#ff7777","center"); text("Press R or use Restart match",640,365,20,"#d7fff2","center"); }
+  }
+  let last = performance.now();
+  function frame(now) { const dt=Math.min(.05,(now-last)/1000); last=now; update(dt); draw(); requestAnimationFrame(frame); }
+  function setKey(key,on) { if (on) down.add(key); else down.delete(key); }
+  window.addEventListener("keydown", e => { const map={w:"up",a:"left",s:"down",d:"right",ArrowUp:"up",ArrowLeft:"left",ArrowDown:"down",ArrowRight:"right",e:"use"," ":"use"}; if(e.key.toLowerCase()==="r" && state.over) reset(); const key=map[e.key]||map[e.key.toLowerCase()]; if(key) { e.preventDefault(); setKey(key,true); } });
+  window.addEventListener("keyup", e => { const map={w:"up",a:"left",s:"down",d:"right",ArrowUp:"up",ArrowLeft:"left",ArrowDown:"down",ArrowRight:"right",e:"use"," ":"use"}; const key=map[e.key]||map[e.key.toLowerCase()]; if(key) setKey(key,false); });
+  for(const button of document.querySelectorAll("[data-key]")) for(const event of ["pointerdown","pointerup","pointercancel","pointerleave"]) button.addEventListener(event,e=>{e.preventDefault();setKey(button.dataset.key,event==="pointerdown");});
+  document.querySelector("#restart").addEventListener("click",reset); reset(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
